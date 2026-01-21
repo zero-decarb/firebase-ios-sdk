@@ -297,7 +297,14 @@ import Foundation
   }
 
   deinit {
-    self.uploadFetcher?.stopFetching()
+    // Only call stopFetching if the fetcher has a valid request.
+    // For resumed uploads (created with location-based initializer), the request is nil.
+    // Calling stopFetching in that case triggers a crash in stopFetchReleasingCallbacks:
+    // when Swift bridges the nil NSURLRequest to URLRequest.
+    // The fetcher will still clean up properly when deallocated without stopFetching.
+    if uploadFetcher?.request != nil {
+      uploadFetcher?.stopFetching()
+    }
   }
 
   private func contentUploadError() -> NSError? {
