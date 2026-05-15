@@ -297,12 +297,30 @@ import Foundation
   }
 
   deinit {
-    // Only call stopFetching if the fetcher has a valid request.
-    // For resumed uploads (created with location-based initializer), the request is nil.
-    // Calling stopFetching in that case triggers a crash in stopFetchReleasingCallbacks:
-    // when Swift bridges the nil NSURLRequest to URLRequest.
-    // The fetcher will still clean up properly when deallocated without stopFetching.
-    if uploadFetcher?.request != nil {
+    // Only call stopFetching if the upload is still in-flight.
+    //
+    // Two related crash classes this guards against — both manifest as a Swift trap
+    // (EXC_BREAKPOINT) inside `URLRequest._unconditionallyBridgeFromObjectiveC` when
+    // GTMSessionFetcher.stopFetchReleasingCallbacks: bridges a freed NSURLRequest:
+    //
+    //   1. Resumed uploads use the location-based fetcher initializer, so
+    //      `fetcher.request` is nil at deinit time → the bridge crashes. Original
+    //      3cbb590 fix covered this with the `request != nil` guard.
+    //
+    //   2. Resumed uploads that completed normally then enter deinit when the
+    //      registry releases the last strong ref. The Swift-side `request` accessor
+    //      may appear non-nil here (the request != nil guard passes) but deeper
+    //      inside stopFetchReleasingCallbacks the ObjC side returns the same freed
+    //      NSURLRequest and the bridge trips again. Observed in ZeroHome's
+    //      recoverPendingUploads flow on iOS 26.4.2 — crash at deinit of a
+    //      successfully completed resumed upload.
+    //
+    // For terminal states (.success / .failed / .cancelled) the fetcher has already
+    // finished and dealloc'd its work — there is nothing to stop. Skip the call
+    // entirely. For non-terminal states (e.g. a still-running upload whose
+    // StorageUploadTask is being released early), keep the existing behavior.
+    if state != .success, state != .failed, state != .cancelled,
+       uploadFetcher?.request != nil {
       uploadFetcher?.stopFetching()
     }
   }
